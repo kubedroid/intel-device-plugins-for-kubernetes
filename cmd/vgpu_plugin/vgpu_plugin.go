@@ -158,7 +158,10 @@ func (dp *devicePlugin) scan() (dpapi.DeviceTree, error) {
 						fmt.Println("The vGPU '", devFile.Name(), "' belongs to iommu group '", iommu.Name(), "'")
 
 						var vgpuNodes []string
-						vgpuNodes = append(vgpuNodes, iommuPath)
+						vfioNode := fmt.Sprintf("/dev/vfio/%s", iommu.Name())
+						fmt.Println("Adding '", vfioNode, "' to the vGPU")
+
+						vgpuNodes = append(vgpuNodes, vfioNode)
 						vgpuNodes = append(vgpuNodes, "/dev/vfio/vfio")
 
 						devTree.AddDevice(vgpuDeviceType, devFile.Name(), dpapi.DeviceInfo{
