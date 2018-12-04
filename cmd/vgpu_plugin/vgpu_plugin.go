@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"path/filepath"
 
 	"github.com/pkg/errors"
 
@@ -36,12 +37,14 @@ const (
 	sysfsDrmDirectory = "/sys/class/drm"
 	devfsDriDirectory = "/dev/dri"
 	gpuDeviceRE       = `^card[0-9]+$`
+	vgpuDeviceRE      = `^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[8|9|aA|bB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$`
 	controlDeviceRE   = `^controlD[0-9]+$`
 	vendorString      = "0x8086"
 
 	// Device plugin settings.
 	namespace  = "gpu.intel.com"
 	deviceType = "i915"
+	vgpuDeviceType = "i915-v"
 )
 
 type devicePlugin struct {
@@ -51,6 +54,7 @@ type devicePlugin struct {
 	sharedDevNum int
 
 	gpuDeviceReg     *regexp.Regexp
+	vgpuDeviceReg     *regexp.Regexp
 	controlDeviceReg *regexp.Regexp
 }
 
@@ -60,6 +64,7 @@ func newDevicePlugin(sysfsDir, devfsDir string, sharedDevNum int) *devicePlugin 
 		devfsDir:         devfsDir,
 		sharedDevNum:     sharedDevNum,
 		gpuDeviceReg:     regexp.MustCompile(gpuDeviceRE),
+		vgpuDeviceReg:    regexp.MustCompile(vgpuDeviceRE),
 		controlDeviceReg: regexp.MustCompile(controlDeviceRE),
 	}
 }
@@ -97,19 +102,24 @@ func (dp *devicePlugin) scan() (dpapi.DeviceTree, error) {
 
 				drmFiles, err := ioutil.ReadDir(path.Join(dp.sysfsDir, f.Name(), "device/drm"))
 				if err != nil {
-					return nil, errors.Wrap(err, "Can't read device folder")
+					return nil, errors.Wrap(err, "Can't read device/drm folder")
 				}
 
 				for _, drmFile := range drmFiles {
+					fmt.Println("Evaluating possible GPU device '", drmFile.Name(), "'")
 					if dp.controlDeviceReg.MatchString(drmFile.Name()) {
 						//Skipping possible drm control node
 						continue
 					}
+
 					devPath := path.Join(dp.devfsDir, drmFile.Name())
+					fmt.Println("Evaluating possible GPU device '", devPath, "'")
 					if _, err := os.Stat(devPath); err != nil {
+						fmt.Println("Failed to evaluate GPU device ", devPath, "'. ", err)
 						continue
 					}
 
+					fmt.Println("Found GPU device '", devPath, "'")
 					debug.Printf("Adding %s to GPU %s", devPath, f.Name())
 					nodes = append(nodes, devPath)
 				}
@@ -122,6 +132,38 @@ func (dp *devicePlugin) scan() (dpapi.DeviceTree, error) {
 						devTree.AddDevice(deviceType, devID, dpapi.DeviceInfo{
 							State: pluginapi.Healthy,
 							Nodes: nodes,
+						})
+					}
+				}
+
+				devFiles, err := ioutil.ReadDir(path.Join(dp.sysfsDir, f.Name(), "device"))
+				if err != nil {
+					return nil, errors.Wrap(err, "Can't read device folder")
+				}
+
+				for _, devFile := range devFiles {
+					if dp.vgpuDeviceReg.MatchString(devFile.Name()) {
+						fmt.Println("Found vGPU device '", devFile.Name(), "'")
+
+						iommuPath, err := filepath.EvalSymlinks(path.Join(dp.sysfsDir, f.Name(), "device", devFile.Name(), "iommu_group"))
+						if err != nil {
+							return nil, errors.Wrap(err, "Can't read iommu_group")
+						}
+
+						iommu, err := os.Stat(iommuPath)
+						if err != nil {
+							return nil, errors.Wrap(err, "Can't stat iommu_group")
+						}
+
+						fmt.Println("The vGPU '", devFile.Name(), "' belongs to iommu group '", iommu.Name(), "'")
+
+						var vgpuNodes []string
+						vgpuNodes = append(vgpuNodes, iommuPath)
+						vgpuNodes = append(vgpuNodes, "/dev/vfio/vfio")
+
+						devTree.AddDevice(vgpuDeviceType, devFile.Name(), dpapi.DeviceInfo{
+							State: pluginapi.Healthy,
+							Nodes: vgpuNodes,
 						})
 					}
 				}
